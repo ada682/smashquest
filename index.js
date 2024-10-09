@@ -93,7 +93,7 @@ async function claimTappingReward() {
     } catch (error) {
         failureCount++;
         const errorCode = error.response ? error.response.status : 'Unknown';
-        errorCodes.push(errorCode); 
+        errorCodes[errorCode] = (errorCodes[errorCode] || 0) + 1; // Count occurrences
         displayStatus();
     }
 }
@@ -109,7 +109,10 @@ async function startClaims() {
 }
 
 function displayStatus() {
-    const errorSummary = errorCodes.join(', ') || 'None';
+    const errorSummary = Object.entries(errorCodes)
+        .map(([code, count]) => `${code} (${count})`)
+        .join(', ') || 'None';
+
     process.stdout.write(`\rSuccess: ${successCount} | Failure: ${failureCount} | Earned: ${totalCoinsEarned} | Errors: ${errorSummary}`);
 }
 
