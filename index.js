@@ -2,6 +2,7 @@ require('dotenv').config();
 const axios = require('axios');
 const FormData = require('form-data');
 const logger = require('./logger');
+const chalk = require('chalk');
 
 const baseUrl = 'https://apps.xprotocol.org';
 const claimRewardUrl = `${baseUrl}/api/smashx/claim-tapping-reward`;
@@ -24,10 +25,9 @@ const headers = {
 let successCount = 0;
 let failureCount = 0;
 let totalCoinsEarned = 0;
+let score = 0;
 const parallelRequests = 50;
 const intervalTime = 5000;
-let lastLogTime = 0;
-const LOG_INTERVAL = 10000; // Log every 10 seconds
 
 async function getSession() {
     try {
@@ -65,8 +65,9 @@ async function claimTappingReward() {
         if (!playerProfile) throw new Error('Failed to get player profile');
 
         const monsterConfig = playerProfile.active_monster.monster;
-        const tapCount = Math.floor(Math.random() * 20) + 30; 
+        const tapCount = Math.floor(Math.random() * 20) + 30;
         const earnedCoinCount = monsterConfig.random_coin_per_tap;
+        score += earnedCoinCount; 
 
         const form = new FormData();
         form.append('tapCount', tapCount.toString());
@@ -76,18 +77,35 @@ async function claimTappingReward() {
 
         const response = await axios.post(claimRewardUrl, form, {
             headers: {
-                ...headers,
-                ...form.getHeaders(),
+                'authority': 'apps.xprotocol.org',
+                'accept': '*/*',
+                'origin': baseUrl,
+                'referer': `${baseUrl}/smashx`,
                 'cookie': `__Secure-authjs.csrf-token=${csrfToken}; __Secure-authjs.session-token=${sessionToken}`
             }
         });
+
         successCount++;
         totalCoinsEarned += earnedCoinCount;
-        logStatusIfNeeded(response.data);
+        displayStatus();
     } catch (error) {
         failureCount++;
-        logger.error(`Claim Failed: ${error.message}`);
+        displayStatus();
     }
+}
+
+async function startClaims() {
+    while (true) {
+        const tasks = [];
+        for (let i = 0; i < parallelRequests; i++) {
+            tasks.push(claimTappingReward());
+        }
+        await Promise.all(tasks);
+    }
+}
+
+function displayStatus() {
+    process.stdout.write(`\r${chalk.green('Success')}: ${successCount} | ${chalk.red('Failure')}: ${failureCount} | ${chalk.blue('Score')}: ${score}`);
 }
 
 function formatNumber(num) {
@@ -119,12 +137,12 @@ async function displayInitialInfo() {
     const boost = playerProfile.active_boost;
 
     logger.info(`
-=== SmashX Bot Initialized ===
-User Level: ${level.level_name} (${level.level_id})
-Current Balance: ${formatNumber(parseFloat(balance))} SQC
-Active Monster: ${monster.name}
-Coin per tap: ${monster.coin_per_tap} (random up to ${monster.random_coin_per_tap})
-Boost: ${boost ? `${boost.multiplier}x until ${new Date(boost.active_to).toLocaleTimeString()}` : 'None'}
+${chalk.bold.green('=== SmashX Bot Initialized ===')}
+User Level: ${chalk.yellow(level.level_name)} (${level.level_id})
+Current Balance: ${chalk.cyan(formatNumber(parseFloat(balance)))} SQC
+Active Monster: ${chalk.magenta(monster.name)}
+Coin per tap: ${chalk.blue(monster.coin_per_tap)} (random up to ${chalk.blue(monster.random_coin_per_tap)})
+Boost: ${boost ? `${chalk.red(`${boost.multiplier}x`)} until ${chalk.red(new Date(boost.active_to).toLocaleTimeString())}` : 'None'}
 ================================`);
 }
 
