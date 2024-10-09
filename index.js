@@ -54,7 +54,9 @@ async function getPlayerProfile() {
         });
         return response.data;
     } catch (error) {
-        logger.error(`Profile Failed: ${error.message}`);
+        failureCount++;
+        const errorCode = error.response ? error.response.status : 'Unknown';
+        errorCodes.push(errorCode); 
         return null;
     }
 }
@@ -90,6 +92,8 @@ async function claimTappingReward() {
         displayStatus();
     } catch (error) {
         failureCount++;
+        const errorCode = error.response ? error.response.status : 'Unknown';
+        errorCodes.push(errorCode); 
         displayStatus();
     }
 }
@@ -105,8 +109,11 @@ async function startClaims() {
 }
 
 function displayStatus() {
-    process.stdout.write(`\r${chalk.green('Success')}: ${successCount} | ${chalk.red('Failure')}: ${failureCount} | ${chalk.blue('Score')}: ${score}`);
+    const errorSummary = errorCodes.join(', ') || 'None';
+    process.stdout.write(`\rSuccess: ${successCount} | Failure: ${failureCount} | Earned: ${totalCoinsEarned} | Errors: ${errorSummary}`);
 }
+
+let errorCodes = [];
 
 function formatNumber(num) {
     return num.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
