@@ -24,10 +24,16 @@ const headers = {
 
 let successCount = 0;
 let failureCount = 0;
+let retrySuccessCount = 0;
+let retryFailureCount = 0;
 let totalCoinsEarned = 0;
-let score = 0;
 const parallelRequests = 50;
-const intervalTime = 5000;
+const intervalTime = 3000;
+const maxRetries = 3;
+
+async function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
 
 async function getSession() {
     try {
@@ -45,97 +51,73 @@ async function getSession() {
 }
 
 async function getPlayerProfile() {
-    try {
-        const response = await axios.get(`${baseUrl}/api/smashx/player-profile`, {
-            headers: {
-                ...headers,
-                'cookie': `__Secure-authjs.csrf-token=${csrfToken}; __Secure-authjs.session-token=${sessionToken}`
+    for (let i = 0; i < maxRetries; i++) {
+        try {
+            const response = await axios.get(`${baseUrl}/api/smashx/player-profile`, {
+                headers: {
+                    ...headers,
+                    'cookie': `__Secure-authjs.csrf-token=${csrfToken}; __Secure-authjs.session-token=${sessionToken}`
+                }
+            });
+            return response.data;
+        } catch (error) {
+            if (i === maxRetries - 1) {
+                return null;
             }
-        });
-        return response.data;
-    } catch (error) {
-        failureCount++;
-        const errorCode = error.response ? error.response.status : 'Unknown';
-        errorCodes.push(errorCode); 
-        return null;
+            await sleep(1000);
+        }
     }
 }
 
 async function claimTappingReward() {
-    try {
-        const playerProfile = await getPlayerProfile();
-        if (!playerProfile) throw new Error('Failed to get player profile');
+    for (let i = 0; i < maxRetries; i++) {
+        try {
+            const playerProfile = await getPlayerProfile();
+            if (!playerProfile) throw new Error('Failed to get player profile');
 
-        const monsterConfig = playerProfile.active_monster.monster;
-        const tapCount = Math.floor(Math.random() * 20) + 30;
-        const earnedCoinCount = monsterConfig.random_coin_per_tap;
-        score += earnedCoinCount; 
+            const monsterConfig = playerProfile.active_monster.monster;
+            const tapCount = Math.floor(Math.random() * 20) + 30;
+            const earnedCoinCount = monsterConfig.random_coin_per_tap;
 
-        const form = new FormData();
-        form.append('tapCount', tapCount.toString());
-        form.append('earnedCoinCount', earnedCoinCount.toString());
-        form.append('startTime', new Date().toISOString());
-        form.append('endTime', new Date().toISOString());
+            const form = new FormData();
+            form.append('tapCount', tapCount.toString());
+            form.append('earnedCoinCount', earnedCoinCount.toString());
+            form.append('startTime', new Date().toISOString());
+            form.append('endTime', new Date().toISOString());
 
-        const response = await axios.post(claimRewardUrl, form, {
-            headers: {
-                'authority': 'apps.xprotocol.org',
-                'accept': '*/*',
-                'origin': baseUrl,
-                'referer': `${baseUrl}/smashx`,
-                'cookie': `__Secure-authjs.csrf-token=${csrfToken}; __Secure-authjs.session-token=${sessionToken}`
+            const response = await axios.post(claimRewardUrl, form, {
+                headers: {
+                    ...headers,
+                    'cookie': `__Secure-authjs.csrf-token=${csrfToken}; __Secure-authjs.session-token=${sessionToken}`
+                },
+                timeout: 10000
+            });
+
+            if (i === 0) {
+                successCount++;
+            } else {
+                retrySuccessCount++;
             }
-        });
-
-        successCount++;
-        totalCoinsEarned += earnedCoinCount;
-        displayStatus();
-    } catch (error) {
-        failureCount++;
-        const errorCode = error.response ? error.response.status : 'Unknown';
-        errorCodes[errorCode] = (errorCodes[errorCode] || 0) + 1; // Count occurrences
-        displayStatus();
-    }
-}
-
-async function startClaims() {
-    while (true) {
-        const tasks = [];
-        for (let i = 0; i < parallelRequests; i++) {
-            tasks.push(claimTappingReward());
+            totalCoinsEarned += earnedCoinCount;
+            return;
+        } catch (error) {
+            if (i === maxRetries - 1) {
+                if (i === 0) {
+                    failureCount++;
+                } else {
+                    retryFailureCount++;
+                }
+            }
+            await sleep(1000);
         }
-        await Promise.all(tasks);
     }
 }
-
-function displayStatus() {
-    const errorSummary = Object.entries(errorCodes)
-        .map(([code, count]) => `${code} (${count})`)
-        .join(', ') || 'None';
-
-    process.stdout.write(`\rSuccess: ${successCount} | Failure: ${failureCount} | Earned: ${totalCoinsEarned} | Errors: ${errorSummary}`);
-}
-
-let errorCodes = [];
 
 function formatNumber(num) {
     return num.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 }
 
-function logStatusIfNeeded(lastClaimData = null) {
-    const now = Date.now();
-    if (now - lastLogTime >= LOG_INTERVAL) {
-        const coinsPerHour = (totalCoinsEarned / ((now - startTime) / 3600000)).toFixed(2);
-        logger.info(`Status Update:
-Success: ${successCount} | Failure: ${failureCount}
-Coins Earned: ${formatNumber(totalCoinsEarned)}
-Rate: ${formatNumber(coinsPerHour)} coins/hour`);
-        if (lastClaimData) {
-            logger.info(`Last Claim: Tap Count: ${lastClaimData.data.tap_count} | Earned: ${formatNumber(lastClaimData.data.earned_coin_amount)} coins`);
-        }
-        lastLogTime = now;
-    }
-}
+let initialInfo = '';
 
 async function displayInitialInfo() {
     const playerProfile = await getPlayerProfile();
@@ -146,17 +128,37 @@ async function displayInitialInfo() {
     const level = playerProfile.player_level;
     const boost = playerProfile.active_boost;
 
-    logger.info(`
-${chalk.bold.green('=== SmashX Bot Initialized ===')}
-User Level: ${chalk.yellow(level.level_name)} (${level.level_id})
-Current Balance: ${chalk.cyan(formatNumber(parseFloat(balance)))} SQC
-Active Monster: ${chalk.magenta(monster.name)}
-Coin per tap: ${chalk.blue(monster.coin_per_tap)} (random up to ${chalk.blue(monster.random_coin_per_tap)})
-Boost: ${boost ? `${chalk.red(`${boost.multiplier}x`)} until ${chalk.red(new Date(boost.active_to).toLocaleTimeString())}` : 'None'}
-================================`);
+    initialInfo = `
+${chalk.bold.green('=============== SmashX Bot Initialized ===============')}
+${chalk.bold.yellow('User Level:')} ${level.level_name} (${level.level_id})
+${chalk.bold.cyan('Current Balance:')} ${formatNumber(parseFloat(balance))} SQC
+${chalk.bold.magenta('Active Monster:')} ${monster.name}
+${chalk.bold.blue('Coin per tap:')} ${monster.coin_per_tap} (random up to ${monster.random_coin_per_tap})
+${chalk.bold.red('Boost:')} ${boost ? `${boost.multiplier}x until ${new Date(boost.active_to).toLocaleTimeString()}` : 'None'}
+${chalk.bold.green('===================================================')}
+| t.me/slyntherinnn`;
 }
 
-let startTime;
+function updateDisplay() {
+    console.clear();
+    process.stdout.write(initialInfo + `\n${chalk.green(`Success: ${formatNumber(successCount)}`)} | ` +
+                   `${chalk.red(`Failure: ${formatNumber(failureCount)}`)} | ` +
+                   `${chalk.blue(`Success Retry: ${formatNumber(retrySuccessCount)}`)} | ` +
+                   `${chalk.yellow(`Failure Retry: ${formatNumber(retryFailureCount)}`)} | ` +
+                   `${chalk.cyan(`Earned: ${formatNumber(totalCoinsEarned)}`)}`);
+}
+
+async function runBatch() {
+    const tasks = [];
+    for (let i = 0; i < parallelRequests; i++) {
+        tasks.push(claimTappingReward());
+        if (i < parallelRequests - 1) {
+            await sleep(100);
+        }
+    }
+    await Promise.all(tasks);
+    updateDisplay();
+}
 
 (async () => {
     try {
@@ -167,17 +169,12 @@ let startTime;
         }
 
         await displayInitialInfo();
-        startTime = Date.now();
-        lastLogTime = startTime;
         
-        setInterval(async () => {
-            const tasks = [];
-            for (let i = 0; i < parallelRequests; i++) {
-                tasks.push(claimTappingReward());
-            }
-            await Promise.all(tasks);
-        }, intervalTime);
+        while (true) {
+            await runBatch();
+            await sleep(intervalTime);
+        }
     } catch (error) {
-        logger.error(`Error: ${error.message}`);
+        logger.error(`Fatal Error: ${error.message}`);
     }
 })();
